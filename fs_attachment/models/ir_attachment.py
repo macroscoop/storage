@@ -22,6 +22,7 @@ import odoo
 from odoo import api, fields, models
 from odoo.exceptions import AccessError, UserError
 from odoo.fields import Domain
+from odoo.http.stream import Stream
 from odoo.tools.binary import BinaryValue
 
 from .strtobool import strtobool
@@ -468,6 +469,30 @@ class IrAttachment(models.Model):
         # every create path, and dropping it there cost 13 tests.
         super()._inverse_raw()
         self._enforce_meaningful_storage_filename()
+
+    def _to_http_stream(self):
+        # Since 20.0 (odoo/odoo 8cbf10c, "simplify binary streaming") core
+        # serves an attachment that carries a url as a redirect to that url
+        # before it looks at the database content; 19.0 checked db_datas
+        # first. Asset bundles (web.assets_*.min.css/.js) always carry their
+        # /web/assets/... url, and this module's force-db rules keep CSS and
+        # JS in the database, so core would answer every bundle request with
+        # a redirect to the very same URL: an endless 301 loop and an unstyled
+        # client. Serve database-resident content as content, like 19.0 did.
+        self.ensure_one()
+        if self.url and not self.store_fname and self.db_datas:
+            data = self.raw.content
+            return Stream(
+                type="data",
+                data=data,
+                last_modified=self.write_date,
+                size=len(data),
+                mimetype=self.mimetype,
+                download_name=self.name,
+                etag=self.checksum,
+                public=self.public,
+            )
+        return super()._to_http_stream()
 
     def _file_read(self) -> BinaryValue:
         # 20.0 dropped the fname/size arguments: the caller reads
